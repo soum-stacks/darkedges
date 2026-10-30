@@ -1,0 +1,80 @@
+# configs/protocol.yaml  -- Dark Edges pre-registration (v1). Commit BEFORE running any analysis on traces.
+# After committing, do not edit. Changes go in docs/amendments.md with date, reason, and whether results had been seen.
+version: 1
+frozen_utc: "2026-10-30T19:16:38Z"      # e.g. 2026-10-31T09:00:00Z (also tag the commit: protocol-v1)
+project: "Dark Edges: static code graphs vs runtime call graphs"
+
+data:
+  tasks: 129                                # public dev tasks (tasks.jsonl)
+  graphs: {unique_commits: 127, fastapi: 67, rich: 47, requests: 12, httpx: 1}
+  note_httpx: "n=1 graph; excluded from per-repo claims, kept in pooled results"
+  inputs_private: true                      # Rule 4b: no competition data is released
+
+tracing:
+  runner: "python -m tracelens.run (sys.monitoring; setprofile fallback)"
+  phases: [pre, post]                       # pre = base commit + test_patch (should fail); post = + gold patch (should pass)
+  test_selection: "test files from test_patch; -k names of added or touched tests when detectable"
+  valid_task: "pre run has >=1 failed test AND post run passes all selected tests"
+  max_seconds_per_run: 900
+
+definitions:
+  runtime_edge_kinds: {direct: "immediate Python caller is repo code", lifted: "nearest repo ancestor reached through external frames", entry: "no repo ancestor"}
+  dark_edge: "runtime edge (direct or lifted) between two MAPPED repo functions with no 'calls' edge between them in the released static graph"
+  near_miss: "dark edge whose endpoints have a static path of length 2"
+  phase_exclusion: "edges involving <module> or class-body code are import-phase; excluded from headline rates, reported separately"
+  causes: [decorated_callee, dunder_or_property, lifted_framework, async_callee, other]   # first match in this order
+  mapping: "tracelens.mapping.to_node_id; nested functions (<locals>) are unmapped by design"
+  gold_nodes: "functions whose base-file line span (ast) overlaps a changed line of the gold patch"
+  oracle_note: "trace ceilings use the fail-to-pass tests, which an agent would not see: upper bounds, not agent claims"
+
+primary_outcomes:
+  O1_dark_edge_fraction: "dark runtime edges / all mapped runtime edges (pre-phase traces, runtime phase), per task then per repo"
+  O2_gold_recall_at_K: "fraction of tasks whose gold node is in the top-K of a ranking; K in [5, 10, 20, 50]"
+  O3_linkpred: "AUC and Hits@10 for predicting dark edges, leave-one-repo-out"
+  O4_agent_gold_file_touched: "fraction of agent episodes whose final patch touches a gold file (E4B, 30 tasks x 2 seeds)"
+
+rankings:
+  methods: [ochiai, stack_distance, static_k1, static_k2, static_k3, bm25]
+  ochiai: "per-test function sets; failing vs passing tests in the same test files"
+  stack_distance: "shortest call path from the failing frame in the runtime graph"
+  static_k_hop: "k-hop neighbourhood (undirected) of graph nodes whose names appear in problem_statement"
+  bm25: {k1: 1.5, b: 0.75, field: "node.text"}
+  ties: "random order, averaged over 100 shuffles"
+
+linkpred:
+  positives: "dark edges (kind direct or lifted, runtime phase)"
+  negatives: "degree-matched random non-edges plus same-module hard negatives; 1:1 and 1:5"
+  scorers: [embedding_cosine, name_token_jaccard, common_neighbors, adamic_adar, personalized_pagerank, same_module, logistic_combo]
+  split: "leave-one-repo-out (fastapi, rich, requests); httpx pooled into training only"
+
+hypotheses:
+  H1: "Dark-edge fraction is highest for fastapi and lowest for requests."
+  H2: "Trace-based gold recall at K=20 exceeds static 2-hop recall at K=20 by at least 10 percentage points (pooled)."
+  H3: "Released embeddings do not beat the name-token Jaccard baseline for dark-edge prediction (AUC difference < 0.02)."
+  H4: "TraceLens raises gold-file-touched rate for E4B over static graph tools (paired by task and seed)."
+  null_results: "Reported as findings."
+
+statistics:
+  alpha: 0.05
+  bootstrap: {resamples: 10000, cluster: task, seed: 0}
+  paired_tests: "McNemar for paired recall/hit comparisons"
+  correlation: "Spearman between per-task dark-edge fraction and dark-only gold indicator"
+  multiple_comparisons: "Holm across H1-H4; secondary analyses labelled exploratory"
+  seeds: {global: 0, tie_shuffles: 100}
+
+exclusions:
+  - "tasks without a valid pre/post pair (reported with reasons)"
+  - "runs that time out (counted as missing, listed)"
+  - "repos with mapping coverage < 0.85 are reported with a warning, not silently dropped"
+
+agent_check:
+  model: "gemma-4-e4b-it-qat-w4a16-ct"
+  tasks: "30, stratified by repo (proportional; at least 3 per repo where available)"
+  conditions: [no_graph_tools, static_graph_tools, tracelens]
+  seeds: 2
+  budget: {max_time_minutes: 10, max_tool_calls: 50, max_turns: 60, timeout_seconds: 100}
+  report: "resolved, patch_chars, gold_file_touched, tool_calls, malformed_calls, seconds; paired comparisons; n is small, intervals reported"
+
+gates:
+  G1_2026-11-03: "valid pre traces for >=100 of 129 tasks; otherwise switch to the counterfactual-graph fallback study"
+  G2_2026-11-08: "analysis scripts reproduce all headline numbers from raw traces; otherwise cut link prediction and the agent check"
