@@ -61,7 +61,7 @@ def test_end_to_end():
         gn = json.loads((out / "results" / "gold_nodes.jsonl").read_text())
         assert gn["gold_node_ids"] == ["pkg.mod.top"], gn
         rep = tracing.validity_report(out, loc["tasks"], gate=1, log=lambda *a: None)
-        assert rep["valid"] == 1
+        assert rep["valid"]["valid"] == 1 and rep["valid_f2p"]["valid"] == 1
         v = json.loads((out / "traces" / "_valid.jsonl").read_text())
         assert v["f2p"] == ["tests/test_mod.py::test_a"], v
         n_before = len((out / "traces" / "_status.jsonl").read_text().splitlines())

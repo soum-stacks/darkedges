@@ -27,7 +27,8 @@ from pathlib import Path
 
 from . import envbuild, hunks
 
-PYTEST_ARGS = ["-q", "-p", "no:cacheprovider"]     # add "-p", "no:anyio" if the smoke test needs it
+PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "-p", "darkedges.pytest_shims", "--continue-on-collection-errors"]
+SHIMS_DIR = Path(__file__).resolve().parent / "shims"   # stand-ins for packages absent from the wheelhouse (last on PYTHONPATH)
 TEST_TIMEOUT = 900                                 # seconds per (task, phase) run
 SRC_DIR = Path(__file__).resolve().parents[1]      # directory that holds tracelens/ and darkedges/
 
@@ -133,7 +134,7 @@ def _counts(trace_path: Path):
 
 def run_tests(repo: Path, deps: Path, files: list, trace_out: Path, timeout=TEST_TIMEOUT, pytest_args=None):
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(SRC_DIR), str(deps), str(repo), str(repo / "src")])
+    env["PYTHONPATH"] = os.pathsep.join([str(SRC_DIR), str(deps), str(repo), str(repo / "src"), str(SHIMS_DIR)])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("PYTEST_ADDOPTS", None)
     cmd = [sys.executable, "-m", "tracelens.run", "--root", str(repo), "--out", str(trace_out), "--",
@@ -202,7 +203,9 @@ def run_task(task: dict, loc: dict, out: Path, work: Path, wheelhouse, done=froz
             return rows
         # ---- env
         info = envbuild.build_env(pre, tw / "deps", wheelhouse, docker_dir=loc["docker"], repo_short=repo_short(task))
-        _append(tdir / "_env.jsonl", {"instance_id": iid, "n_wheels": info.n_wheels,
+        shims = [q.name for q in SHIMS_DIR.iterdir() if q.is_dir() and not (info.deps_dir / q.name).exists()] \
+            if SHIMS_DIR.is_dir() else []
+        _append(tdir / "_env.jsonl", {"instance_id": iid, "n_wheels": info.n_wheels, "shims_on_path": shims,
                                       "env_seconds": info.seconds, "notes": info.notes})
         for phase in phases:
             if phase == "pre":
@@ -265,16 +268,20 @@ def run_all(loc, out, work, ids=None, shard=(0, 1), time_budget_h=11.0, retry_fa
 
 # ------------------------------------------------------------------ validity + gate
 def validity_report(out, tasks_path, gate=100, log=print) -> dict:
+    """Two definitions, both written to _valid.jsonl:
+    strict : pre has >=1 failed test AND post has 0 failed and >=1 passed        (Handoff Addendum 1)
+    f2p    : >=1 test failed in pre and passed in post (SWE-bench style; tests failing in BOTH are
+             'env-limited' and listed in both_failing). POST-HOC amendment: log it in docs/amendments.md."""
     out = Path(out); tdir = out / "traces"
     st = {}
     if (tdir / "_status.jsonl").is_file():
         for l in (tdir / "_status.jsonl").read_text().splitlines():
             if l.strip():
                 r = json.loads(l); st[(r["instance_id"], r["phase"])] = r      # last row wins
-    tasks = load_tasks(tasks_path); rows = []
-    for t in tasks:
+    rows = []
+    for t in load_tasks(tasks_path):
         iid = t["instance_id"]; pre, post = st.get((iid, "pre")), st.get((iid, "post"))
-        reason, f2p = None, []
+        reason = None
         if not pre or not pre["ok"]:
             reason = "pre: " + (pre["error"] if pre else "not run")
         elif pre["tests_failed"] < 1:
@@ -285,22 +292,28 @@ def validity_report(out, tasks_path, gate=100, log=print) -> dict:
             reason = "post: failures remain"
         elif post["tests_passed"] < 1:
             reason = "post: no passing test"
-        if reason is None:
-            tp = lambda ph: json.loads((tdir / f"{iid}.{ph}.json").read_text())["tests"]
-            a, b = tp("pre"), tp("post")
+        f2p, both = [], 0
+        if pre and pre["ok"] and post and post["ok"]:
+            a = json.loads((tdir / f"{iid}.pre.json").read_text())["tests"]
+            b = json.loads((tdir / f"{iid}.post.json").read_text())["tests"]
             f2p = sorted(k for k, v in a.items() if v["outcome"] == "failed" and b.get(k, {}).get("outcome") == "passed")
-            if not f2p:
-                reason = "no fail-to-pass test (failures pre do not pass post)"
-        rows.append({"instance_id": iid, "repo": t["repo"], "valid": reason is None, "reason": reason, "f2p": f2p,
+            both = sum(1 for k, v in a.items() if v["outcome"] == "failed" and b.get(k, {}).get("outcome") == "failed")
+        if reason is None and not f2p:
+            reason = "no fail-to-pass test (failures pre do not pass post)"
+        rows.append({"instance_id": iid, "repo": t["repo"], "valid": reason is None, "valid_f2p": bool(f2p),
+                     "reason": reason, "f2p": f2p, "both_failing": both,
                      "pre_failed": pre and pre["tests_failed"], "post_failed": post and post["tests_failed"],
                      "post_passed": post and post["tests_passed"]})
     (tdir / "_valid.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    by = Counter(); tot = Counter()
-    for r in rows:
-        tot[r["repo"]] += 1; by[r["repo"]] += r["valid"]
-    nv = sum(r["valid"] for r in rows)
-    log("valid per repo: " + ", ".join(f"{k} {by[k]}/{tot[k]}" for k in sorted(tot)))
-    log(f"VALID {nv}/{len(rows)}  -> gate (>= {gate}): {'PASS' if nv >= gate else 'FAIL: switch to fallback study'}")
-    for k, n in Counter((r["reason"] or "")[:60] for r in rows if not r["valid"]).most_common(8):
-        log(f"   {n:3d}  {k}")
-    return {"valid": nv, "total": len(rows), "per_repo": dict(by)}
+    res = {}
+    for key in ("valid", "valid_f2p"):
+        by, tot = Counter(), Counter()
+        for r in rows:
+            tot[r["repo"]] += 1; by[r["repo"]] += r[key]
+        nv = sum(r[key] for r in rows)
+        log(f"[{key}] " + ", ".join(f"{k} {by[k]}/{tot[k]}" for k in sorted(tot)) +
+            f"  => {nv}/{len(rows)}  gate >= {gate}: {'PASS' if nv >= gate else 'FAIL'}")
+        res[key] = {"valid": nv, "total": len(rows), "per_repo": dict(by)}
+    for k, n in Counter((r["reason"] or "")[:70] for r in rows if not r["valid_f2p"]).most_common(8):
+        log(f"   not f2p-valid: {n:3d}  {k}")
+    return res
