@@ -123,3 +123,4 @@ if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):
             f(); print("ok", k)
+
