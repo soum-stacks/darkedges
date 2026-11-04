@@ -208,7 +208,8 @@ def mini_resolve(reqs, wh: Wheelhouse, self_name: str | None = None, max_iter: i
             return False
         if check_marker and r.marker is not None and not r.marker.evaluate({"extra": ""}):
             return False
-        new = cons.get(n, SpecifierSet()) & r.specifier
+        spec = SpecifierSet() if (check_marker and n == "pytest") else r.specifier   # ignore repo pins on pytest (old pins need `py`, absent from the wheelhouse)
+        new = cons.get(n, SpecifierSet()) & spec
         ex = extras.setdefault(n, set())
         changed = n not in cons or str(new) != str(cons[n]) or not set(r.extras) <= ex
         cons[n] = new

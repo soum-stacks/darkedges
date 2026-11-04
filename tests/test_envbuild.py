@@ -69,6 +69,13 @@ def test_skip_missing_and_wrong_platform_and_self():
         assert not any("requests" in n or "ruff" in n or "mkdocs" in n for n in notes)
 
 
+def test_top_level_pytest_pin_ignored():
+    with tempfile.TemporaryDirectory() as t:
+        wh = make_house(Path(t))
+        ch, notes = eb.mini_resolve(["pytest<=6.2.5"], wh)
+        assert names(ch)["pytest"] == "8.0" and not notes
+
+
 def test_extras_marker_and_unsatisfiable():
     with tempfile.TemporaryDirectory() as t:
         wh = make_house(Path(t))
@@ -116,4 +123,3 @@ if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):
             f(); print("ok", k)
-
