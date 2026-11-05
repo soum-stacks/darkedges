@@ -4,6 +4,7 @@ logs/
 *.tgz
 *.npz
 *.npy
+*.zip
 slim.zip
 measurements*.jsonl
 
