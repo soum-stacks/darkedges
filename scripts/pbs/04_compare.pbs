@@ -1,0 +1,58 @@
+#!/bin/bash
+#PBS -N de_compare
+#PBS -q regular
+#PBS -l nodes=1:ppn=4
+#PBS -l walltime=03:00:00
+#PBS -e ../../logs/
+#PBS -o ../../logs/
+
+set -Eeuo pipefail
+cd "$PBS_O_WORKDIR"                      # submit from <repo>/scripts/pbs/
+REPO=$(cd ../.. && pwd)
+DATA_DIR="$REPO/data"
+RES_DIR="$REPO/results"
+LOG="$REPO/logs/log_${PBS_JOBID}"
+mkdir -p "$REPO/logs" "$RES_DIR" "$REPO/paper/figures"
+
+log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+handle_error() {
+  local code=$?
+  log "FAILED job=$PBS_JOBID host=$(hostname) line=$1 exit=$code time=$(date '+%F %T')"
+  exit "$code"
+}
+trap 'handle_error $LINENO' ERR
+
+# ---- EDIT PER JOB ----
+MODULES=(anaconda3)
+CONDA_ENV="darkedges"
+REQUIRED_CMDS=(timeout python)
+# ----------------------
+
+source /etc/profile.d/modules.sh 2>/dev/null || true
+for m in "${MODULES[@]}"; do
+  module load "$m" && log "loaded module: $m"
+done
+
+if [[ -n "$CONDA_ENV" ]]; then
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+  conda activate "$CONDA_ENV"
+  log "conda env: $CONDA_ENV"
+fi
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
+  command -v "$cmd" >/dev/null || { log "missing dependency: $cmd"; exit 127; }
+  log "$cmd -> $(command -v "$cmd")"
+done
+log "python $(python --version 2>&1); numpy/scipy/sklearn/pandas: $(python -c 'import numpy,scipy,sklearn,pandas;print(numpy.__version__,scipy.__version__,sklearn.__version__,pandas.__version__)')"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+
+mapfile -t INPUTS < <(find "$DATA_DIR/traces" -maxdepth 1 -name "*.pre.json" | sort)
+[[ ${#INPUTS[@]} -gt 0 ]] || { log "no *.pre.json traces in $DATA_DIR/traces"; exit 1; }
+log "found ${#INPUTS[@]} pre traces"
+[[ -s "$DATA_DIR/slim/tasks.jsonl" ]] || { log "missing $DATA_DIR/slim/tasks.jsonl"; exit 1; }
+log "step 04: label runtime edges (task-set strict)"
+timeout --foreground 10000 python "$REPO/scripts/04_compare_static.py" --root "$REPO" --task-set strict 2>&1 | tee -a "$LOG"
+for f in edges_labeled.jsonl mapping_coverage.csv dark_by_task.csv; do
+  [[ -s "$RES_DIR/$f" ]] || { log "missing output: $RES_DIR/$f"; exit 1; }
+done
+log "done"
