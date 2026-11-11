@@ -72,3 +72,34 @@ def test_coverage():
     c = coverage_row(tr, g, map_trace(tr, g), "t1", "r")
     assert c["n_funcs"] == 6 and c["n_unmapped"] == 0 and c["mapped_call_fraction"] == 1.0
     assert (c["n_module_nodes"], c["n_nested_nodes"], c["n_test_nodes"]) == (1, 1, 1)
+
+
+def test_graph_name_is_short_even_if_raw_name_is_qualified():
+    g = Graph([{"id": "pkg.mod.K.__init__", "name": "pkg.mod.K.__init__", "text": "def __init__(self):\n  pass"}], [])
+    assert g.name["pkg.mod.K.__init__"] == "__init__" and g.raw_name["pkg.mod.K.__init__"] == "pkg.mod.K.__init__"
+    assert classify(g.text["pkg.mod.K.__init__"], "direct", name="pkg.mod.K.__init__") == "dunder"
+
+
+def test_class_hub_labels():
+    nodes = [{"id": i, "name": i, "text": t} for i, t in [
+        ("pkg.mod.K", "class K:\n    pass"), ("pkg.mod.K.a", "def a(self):\n    pass"),
+        ("pkg.mod.K.b", "def b(self):\n    pass"), ("pkg.mod.K.__init__", "def __init__(self):\n    pass"),
+        ("pkg.mod.f", "def f():\n    pass")]]
+    edges = [{"source": "pkg.mod.f", "target": "pkg.mod.K", "type": "calls"},
+             {"source": "pkg.mod.K", "target": "pkg.mod.K.b", "type": "calls"}]
+    g = Graph(nodes, edges)
+    mk = lambda i, q, ln: {"i": i, "relpath": "pkg/mod.py", "qualname": q, "firstlineno": ln, "calls": 1}  # noqa: E731
+    tr = {"nodes": [mk(0, "f", 1), mk(1, "K.a", 5), mk(2, "K.b", 9), mk(3, "K.__init__", 12)],
+          "edges": [{"caller": 0, "callee": 2, "kind": "direct", "count": 1},    # f -> K.b : 2 hops via class K
+                    {"caller": 1, "callee": 2, "kind": "direct", "count": 1},    # K.a -> K.b : same class
+                    {"caller": 0, "callee": 3, "kind": "direct", "count": 1}],   # f -> K.__init__ : dunder, no path
+          "tests": {}}
+    rows, _ = label_edges(tr, g, "t", "r")
+    by = {(r["caller_id"].split(".")[-1], r["callee_id"].split(".")[-1]): r for r in rows}
+    fb = by[("f", "b")]
+    assert fb["static_path_len"] == 2 and fb["static_path_len_noclass"] is None and fb["same_class"] is False
+    assert by[("a", "b")]["same_class"] is True and by[("f", "__init__")]["callee_dunder"] is True
+    s = task_dark_summary(rows, "t", "r")
+    assert s["n_pairs"] == 3 and s["n_dark"] == 3
+    assert s["n_pairs_excl_same_class"] == 2 and s["n_pairs_strict"] == 1 and s["dark_fraction_strict"] == 1.0
+    assert (s["n_dark_len2"], s["n_dark_len2_noclass"], s["n_dark_same_class"], s["n_dark_dunder_callee"]) == (1, 0, 1, 1)

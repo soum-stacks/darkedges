@@ -64,43 +64,67 @@ def main():
         d["repo"] = d["repo"].map(short)
         counts = d.dropna(subset=["dark_fraction"]).groupby("repo").size()
         repos_ok = [r for r in REPO_ORDER if counts.get(r, 0) >= a.min_tasks]
-        h1 = {"per_repo": {}, "per_repo_direct": {}, "contrasts": {}, "n_tasks_by_repo": counts.to_dict()}
-        for r in repos_ok:
-            h1["per_repo"][r] = S.cluster_bootstrap_mean(d[d.repo == r]["dark_fraction"], B)
-            h1["per_repo_direct"][r] = S.cluster_bootstrap_mean(d[d.repo == r]["dark_fraction_direct"], B)
-        h1["all"] = S.cluster_bootstrap_mean(d["dark_fraction"], B)
-        for x, y in [("fastapi", "rich"), ("rich", "requests"), ("fastapi", "requests")]:
-            if x in repos_ok and y in repos_ok:
-                h1["contrasts"][f"{x}-{y}"] = S.cluster_bootstrap_group_diff(
-                    d[d.repo == x]["dark_fraction"], d[d.repo == y]["dark_fraction"], B)
-        if len(repos_ok) >= 2:
-            order = sorted(repos_ok, key=lambda r: -h1["per_repo"][r]["mean"])
-            h1["observed_order_high_to_low"] = order
-            h1["H1_ordering_matches"] = bool(order[0] == "fastapi" and order[-1] == "requests")
+        series = [("dark_fraction", "headline (direct+lifted)"), ("dark_fraction_direct", "direct only"),
+                  ("dark_fraction_excl_same_class", "excl. same-class pairs"),
+                  ("dark_fraction_strict", "excl. same-class pairs and dunder callees")]
+        series = [(c, l) for c, l in series if c in d.columns]
+        h1 = {"series": {c: {} for c, _ in series}, "contrasts": {}, "n_tasks_by_repo": counts.to_dict()}
+        for c, _ in series:
+            for r in repos_ok:
+                h1["series"][c][r] = S.cluster_bootstrap_mean(d[d.repo == r][c], B)
+            h1["series"][c]["all"] = S.cluster_bootstrap_mean(d[c], B)
+        for c in [c for c, _ in series if c in ("dark_fraction", "dark_fraction_excl_same_class", "dark_fraction_strict")]:
+            for x, y in [("fastapi", "rich"), ("rich", "requests"), ("fastapi", "requests")]:
+                if x in repos_ok and y in repos_ok:
+                    h1["contrasts"][f"{c}:{x}-{y}"] = S.cluster_bootstrap_group_diff(
+                        d[d.repo == x][c], d[d.repo == y][c], B)
+        for c, _ in series:
+            order = sorted(repos_ok, key=lambda r: -h1["series"][c][r]["mean"])
+            h1["series"][c]["order_high_to_low"] = order
+            h1["series"][c]["H1_ordering_matches"] = bool(order and order[0] == "fastapi" and order[-1] == "requests")
+        # pooled composition and near-miss counts (task-pair level; duplicates across tasks counted)
+        sums = {k: int(d[k].sum()) for k in d.columns if k.startswith("n_") and d[k].dtype.kind in "iu"}
+        h1["pooled_counts"] = sums
         out["H1"] = h1
-        md.append("## H1 dark-edge fraction (task-macro mean, headline = direct+lifted, runtime phase, non-test)\n")
-        md.append("| repo | tasks | dark fraction [95% CI] | direct-only [95% CI] |\n|---|---|---|---|")
+        md.append("## H1 dark-edge fraction (task-macro mean; runtime phase, non-test, kind direct|lifted)\n")
+        md.append("| repo | tasks | " + " | ".join(l for _, l in series) + " |\n|---|---|" + "---|" * len(series))
         for r in repos_ok:
-            c, cd = h1["per_repo"][r], h1["per_repo_direct"][r]
-            md.append(f"| {r} | {c['n']} | {fmt(c['mean'])} [{fmt(c['lo'])}, {fmt(c['hi'])}] | "
-                      f"{fmt(cd['mean'])} [{fmt(cd['lo'])}, {fmt(cd['hi'])}] |")
+            md.append(f"| {r} | {h1['series'][series[0][0]][r]['n']} | " + " | ".join(
+                f"{fmt(h1['series'][c][r]['mean'])} [{fmt(h1['series'][c][r]['lo'])}, {fmt(h1['series'][c][r]['hi'])}]"
+                for c, _ in series) + " |")
+        md.append("")
         for k, v in h1["contrasts"].items():
-            md.append(f"\n- {k}: diff {fmt(v['diff'])} [{fmt(v['lo'])}, {fmt(v['hi'])}]")
-        if "observed_order_high_to_low" in h1:
-            md.append(f"\nObserved order (high to low): {' > '.join(h1['observed_order_high_to_low'])}; "
-                      f"H1 ordering (fastapi highest, requests lowest) matches: {h1['H1_ordering_matches']}\n")
+            md.append(f"- {k}: diff {fmt(v['diff'])} [{fmt(v['lo'])}, {fmt(v['hi'])}]")
+        for c, l in series:
+            md.append(f"- order by {l}: {' > '.join(h1['series'][c]['order_high_to_low'])}; "
+                      f"H1 ordering (fastapi highest, requests lowest) matches: {h1['series'][c]['H1_ordering_matches']}")
+        md.append("\nNote: requests has only a handful of tasks; its intervals are unreliable.")
+        if "n_dark" in sums and sums.get("n_dark"):
+            nd = sums["n_dark"]
+            md.append("\n### Composition of dark pairs (pooled over tasks; rich dominates the pair counts)\n")
+            md.append(f"- pairs {sums.get('n_pairs')}, dark {nd}")
+            for k, lab in [("n_dark_same_class", "caller and callee in the same class"),
+                           ("n_dark_dunder_callee", "callee is a dunder method"),
+                           ("n_dark_len2", "static path length 2 (class nodes allowed as intermediates)"),
+                           ("n_dark_len2_noclass", "static path length 2 without class nodes"),
+                           ("n_dark_len3", "static path length 3 (class nodes allowed)"),
+                           ("n_dark_len3_noclass", "static path length 3 without class nodes")]:
+                if k in sums:
+                    md.append(f"- {lab}: {sums[k]} ({sums[k] / nd:.1%} of dark pairs)")
 
-        fig, ax = plt.subplots(figsize=(5, 3.4))
+        fig, ax = plt.subplots(figsize=(6.2, 3.6))
         xs = np.arange(len(repos_ok))
-        for off, key, lab in [(-0.18, "per_repo", "direct + lifted"), (0.18, "per_repo_direct", "direct only")]:
-            m = [h1[key][r]["mean"] for r in repos_ok]
-            lo = [h1[key][r]["mean"] - h1[key][r]["lo"] for r in repos_ok]
-            hi = [h1[key][r]["hi"] - h1[key][r]["mean"] for r in repos_ok]
-            ax.bar(xs + off, m, 0.34, yerr=[lo, hi], capsize=3, label=lab)
+        shown = [(c, l) for c, l in series if c != "dark_fraction_direct"]
+        w = 0.8 / max(1, len(shown))
+        for j, (c, l) in enumerate(shown):
+            m = [h1["series"][c][r]["mean"] for r in repos_ok]
+            lo = [h1["series"][c][r]["mean"] - h1["series"][c][r]["lo"] for r in repos_ok]
+            hi = [h1["series"][c][r]["hi"] - h1["series"][c][r]["mean"] for r in repos_ok]
+            ax.bar(xs + (j - (len(shown) - 1) / 2) * w, m, w, yerr=[lo, hi], capsize=2, label=l)
         ax.set_xticks(xs)
-        ax.set_xticklabels([f"{r}\n(n={h1['per_repo'][r]['n']})" for r in repos_ok])
+        ax.set_xticklabels([f"{r}\n(n={h1['series']['dark_fraction'][r]['n']})" for r in repos_ok])
         ax.set_ylabel("dark-edge fraction")
-        ax.legend(frameon=False)
+        ax.legend(frameon=False, fontsize=7)
         savefig(fig, figs / "F1_dark_fraction")
         plt.close(fig)
 
@@ -204,43 +228,57 @@ def main():
         savefig(fig, figs / "F3_gold_in_trace")
         plt.close(fig)
 
-    # ------------------------------------------------------------ H3 link prediction
-    p = res / "linkpred.csv"
-    if p.exists() and p.stat().st_size:
+    # ------------------------------------------------------------ H3 link prediction (all variants)
+    lp_files = sorted(res.glob("linkpred*.csv"))
+    h3_all = {}
+    for p in lp_files:
+        if not p.stat().st_size:
+            continue
+        variant = p.stem.replace("linkpred", "").strip("_") or "default"
         lp = pd.read_csv(p)
-        h3 = {"auc": {}, "emb_minus_name_auc": {}, "emb_beats_name_by_0.02": {}}
+        h3 = {"auc": {}, "hits10": {}, "emb_minus_name_auc": {}, "emb_beats_name_by_0.02": {}}
         for rr, grp in lp.groupby("heldout_repo"):
             h3["auc"][rr] = dict(zip(grp.scorer, grp.auc))
+            h3["hits10"][rr] = dict(zip(grp.scorer, grp.hits10))
             sc = h3["auc"][rr]
             if "emb_cos" in sc and "name_jaccard" in sc:
                 diff = sc["emb_cos"] - sc["name_jaccard"]
                 h3["emb_minus_name_auc"][rr] = diff
                 h3["emb_beats_name_by_0.02"][rr] = bool(diff > 0.02)
-        out["H3"] = h3
-        md.append("\n## H3 link prediction (AUC, leave-one-repo-out)\n")
+        h3["n_pos"] = {rr: int(grp.n_pos.iloc[0]) for rr, grp in lp.groupby("heldout_repo")}
+        h3_all[variant] = h3
+        md.append(f"\n## H3 link prediction, variant '{variant}' (AUC, leave-one-repo-out; pooled over held-out tasks, no intervals)\n")
         scorers = list(dict.fromkeys(lp.scorer))
-        md.append("| held-out | " + " | ".join(scorers) + " |\n|---|" + "---|" * len(scorers))
+        md.append("| held-out (n_pos) | " + " | ".join(scorers) + " |\n|---|" + "---|" * len(scorers))
         for rr, sc in h3["auc"].items():
-            md.append(f"| {rr} | " + " | ".join(fmt(sc.get(s)) for s in scorers) + " |")
+            md.append(f"| {rr} ({h3['n_pos'][rr]}) | " + " | ".join(fmt(sc.get(s_)) for s_ in scorers) + " |")
+        md.append("\nHits@10:\n")
+        md.append("| held-out | " + " | ".join(scorers) + " |\n|---|" + "---|" * len(scorers))
+        for rr, sc in h3["hits10"].items():
+            md.append(f"| {rr} | " + " | ".join(fmt(sc.get(s_)) for s_ in scorers) + " |")
         if h3["emb_minus_name_auc"]:
-            md.append("\nemb_cos - name_jaccard AUC: " + ", ".join(
-                f"{k}: {fmt(v)}" for k, v in h3["emb_minus_name_auc"].items()))
-            md.append(f"\nEmbeddings beat the name-token baseline by >0.02 AUC in "
-                      f"{sum(h3['emb_beats_name_by_0.02'].values())}/{len(h3['emb_beats_name_by_0.02'])} held-out repos.")
-
-        fig, ax = plt.subplots(figsize=(6.4, 3.6))
+            md.append("\nemb_cos - name_jaccard AUC: " + ", ".join(f"{k}: {fmt(v)}" for k, v in h3["emb_minus_name_auc"].items())
+                      + f"; embeddings beat the name-token baseline by >0.02 AUC in "
+                        f"{sum(h3['emb_beats_name_by_0.02'].values())}/{len(h3['emb_beats_name_by_0.02'])} held-out repos.")
+        if "logreg" in scorers and "logreg_no_emb" in scorers:
+            md.append("logreg - logreg_no_emb AUC (value of embeddings on top of the other scorers): " + ", ".join(
+                f"{rr}: {fmt(sc['logreg'] - sc['logreg_no_emb'])}" for rr, sc in h3["auc"].items()))
+        fig, ax = plt.subplots(figsize=(7.2, 3.6))
         reps = list(h3["auc"])
         xs = np.arange(len(scorers))
         w = 0.8 / max(1, len(reps))
         for j, rr in enumerate(reps):
-            ax.bar(xs + (j - (len(reps) - 1) / 2) * w, [h3["auc"][rr].get(s, np.nan) for s in scorers], w, label=rr)
+            ax.bar(xs + (j - (len(reps) - 1) / 2) * w, [h3["auc"][rr].get(s_, np.nan) for s_ in scorers], w, label=rr)
         ax.axhline(0.5, color="k", lw=0.6, ls=":")
         ax.set_xticks(xs)
         ax.set_xticklabels(scorers, rotation=30, ha="right", fontsize=8)
         ax.set_ylabel("AUC (held-out repo)")
+        ax.set_title(variant, fontsize=9)
         ax.legend(frameon=False, fontsize=8)
-        savefig(fig, figs / "F4_linkpred_auc")
+        savefig(fig, figs / ("F4_linkpred_auc" if variant == "default" else f"F4_linkpred_auc_{variant}"))
         plt.close(fig)
+    if h3_all:
+        out["H3"] = h3_all
 
     (res / "stats.json").write_text(json.dumps(out, indent=2, default=float))
     (res / "hypotheses_summary.md").write_text("\n".join(md) + "\n")
