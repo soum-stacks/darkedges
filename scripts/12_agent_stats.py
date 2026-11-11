@@ -125,8 +125,8 @@ def main():
         for m in METRICS + ["tool_calls", "seconds", "patch_chars"]:
             S["by_condition"][c][m] = cluster_bootstrap_mean(per_task(rows, c, m, tasks, seeds), B=a.boot)
         S["by_condition"][c]["n_runs"] = sum(1 for k in rows if k[1] == c)
-        S["by_condition"][c]["empty_patch_rate"] = float(np.mean(
-            [rows[k]["patch_chars"] == 0 for k in rows if k[1] == c])) if S["by_condition"][c]["n_runs"] else None
+        pcs = [rows[k]["patch_chars"] for k in rows if k[1] == c and rows[k].get("patch_chars") is not None]
+        S["by_condition"][c]["empty_patch_rate"] = float(np.mean([x == 0 for x in pcs])) if pcs else None
 
     for x, y, tag in CONTRASTS:
         for m in METRICS:
@@ -142,9 +142,10 @@ def main():
             "tracelens_runs": len(tl), "runs_with_tracer_output": len(used),
             "tracer_use_rate": len(used) / len(tl),
             "gold_file_rate_when_tracer_used": float(np.mean([v["gold_file_touched"] for v in used])) if used else None,
-            "gold_file_rate_when_not_used": float(np.mean([v["gold_file_touched"] for v in tl if v not in used]))
+            "gold_file_rate_when_not_used": float(np.mean([v["gold_file_touched"] for v in tl if v.get("trace_ok", 0) == 0]))
             if len(used) < len(tl) else None,
-            "mean_graph_mentions": {c: float(np.mean([v.get("graph_mentions", 0) for k, v in rows.items() if k[1] == c]))
+            "mean_graph_mentions": {c: (float(np.mean(g)) if (g := [v["graph_mentions"] for k, v in rows.items()
+                                        if k[1] == c and v.get("graph_mentions") is not None]) else None)
                                     for c in CONDS},
         }
 
