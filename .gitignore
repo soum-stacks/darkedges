@@ -16,4 +16,4 @@ kaggle.json
 __pycache__/
 *.pyc
 .pytest_cache/
-.ipynb_checkpoints/
+.ipynb_checkpoints/sens_f2p/

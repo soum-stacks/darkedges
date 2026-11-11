@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .causes import classify, is_class_text
+from .causes import classify, is_class_text, is_dunder
 from .dataio import Graph, bfs_levels
 
 NESTED_MARKERS = ("<locals>", "<lambda>", "<genexpr>", "<listcomp>", "<dictcomp>", "<setcomp>")
@@ -163,12 +163,18 @@ def label_edges(trace: dict, graph: Graph, instance_id: str = "", repo: str = ""
 
     rows = []
     bfs_cache: dict = {}
+    bfs_cache_nc: dict = {}
     for (cid, did, kind), m in merged.items():
         cn, dn = by_i[m["caller_i"]], by_i[m["callee_i"]]
         static = graph.has_call(cid, did)
         if cid not in bfs_cache:
             bfs_cache[cid] = bfs_levels(graph.calls_out, [cid], 3)
         plen = bfs_cache[cid].get(did)
+        if cid not in bfs_cache_nc:
+            bfs_cache_nc[cid] = bfs_levels(graph.calls_out_noclass(), [cid], 3)
+        plen_nc = bfs_cache_nc[cid].get(did)
+        cc = graph.class_of(cid)
+        same_class = cc is not None and cc == graph.class_of(did)
         phase = "import" if (
             cn["qualname"] == "<module>" or dn["qualname"] == "<module>"
             or is_class_text(graph.text.get(cid, "")) or is_class_text(graph.text.get(did, ""))
@@ -178,7 +184,8 @@ def label_edges(trace: dict, graph: Graph, instance_id: str = "", repo: str = ""
             "instance_id": instance_id, "repo": repo,
             "caller_id": cid, "callee_id": did, "kind": kind, "count": m["count"],
             "phase": phase, "static_edge": static, "static_path_len": plen,
-            "cause": cause, "any_type_edge": (cid, did) in graph.any_pairs,
+            "static_path_len_noclass": plen_nc, "same_class": same_class,
+            "callee_dunder": is_dunder(graph.name.get(did, "")), "cause": cause, "any_type_edge": (cid, did) in graph.any_pairs,
             "test_code": is_test_path(cn["relpath"]) or is_test_path(dn["relpath"]),
         })
     stats["n_labeled"] = len(rows)
@@ -190,7 +197,9 @@ def task_dark_summary(rows: list[dict], instance_id: str = "", repo: str = "") -
     """Per-task dark-edge fractions over unique (caller, callee) pairs.
 
     Headline set: phase == 'runtime', test_code == False, kind in direct|lifted.
-    'direct' sensitivity: pairs that have at least one direct row.
+    Sensitivities: direct-only pairs; excluding same-class pairs; 'strict' = excluding same-class pairs
+    AND pairs whose callee is a dunder method (both are granularity effects of the released graphs);
+    count-weighted; import phase. Also near-miss counts with and without class nodes as intermediates.
     """
     pairs: dict = {}
     imp: dict = {}
@@ -198,8 +207,10 @@ def task_dark_summary(rows: list[dict], instance_id: str = "", repo: str = "") -
         if r["kind"] not in ("direct", "lifted") or r["test_code"]:
             continue
         tgt = pairs if r["phase"] == "runtime" else imp
-        p = tgt.setdefault((r["caller_id"], r["callee_id"]),
-                           {"dark": not r["static_edge"], "direct": False, "count": 0})
+        p = tgt.setdefault((r["caller_id"], r["callee_id"]), {
+            "dark": not r["static_edge"], "direct": False, "count": 0,
+            "same": bool(r.get("same_class", False)), "dunder": bool(r.get("callee_dunder", False)),
+            "plen": r.get("static_path_len"), "plen_nc": r.get("static_path_len_noclass")})
         p["direct"] = p["direct"] or r["kind"] == "direct"
         p["count"] += r["count"]
 
@@ -212,12 +223,24 @@ def task_dark_summary(rows: list[dict], instance_id: str = "", repo: str = "") -
     n, k, f = frac(pairs)
     nd, kd, fd = frac(pairs, lambda v: v["direct"])
     ni, ki, fi = frac(imp)
+    nx, kx, fx = frac(pairs, lambda v: not v["same"])
+    ns, ks, fs = frac(pairs, lambda v: not v["same"] and not v["dunder"])
     cnt_all = sum(v["count"] for v in pairs.values())
     cnt_dark = sum(v["count"] for v in pairs.values() if v["dark"])
+    dark = [v for v in pairs.values() if v["dark"]]
     return {
         "instance_id": instance_id, "repo": repo,
         "n_pairs": n, "n_dark": k, "dark_fraction": f,
         "n_pairs_direct": nd, "n_dark_direct": kd, "dark_fraction_direct": fd,
         "n_pairs_import": ni, "n_dark_import": ki, "dark_fraction_import": fi,
         "dark_fraction_count_weighted": (cnt_dark / cnt_all) if cnt_all else None,
+        "n_pairs_excl_same_class": nx, "n_dark_excl_same_class": kx, "dark_fraction_excl_same_class": fx,
+        "n_pairs_strict": ns, "n_dark_strict": ks, "dark_fraction_strict": fs,
+        "n_pairs_same_class": sum(1 for v in pairs.values() if v["same"]),
+        "n_dark_same_class": sum(1 for v in dark if v["same"]),
+        "n_dark_dunder_callee": sum(1 for v in dark if v["dunder"]),
+        "n_dark_len2": sum(1 for v in dark if v["plen"] == 2),
+        "n_dark_len3": sum(1 for v in dark if v["plen"] == 3),
+        "n_dark_len2_noclass": sum(1 for v in dark if v["plen_nc"] == 2),
+        "n_dark_len3_noclass": sum(1 for v in dark if v["plen_nc"] == 3),
     }

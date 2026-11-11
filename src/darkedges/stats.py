@@ -76,3 +76,38 @@ def spearman(x, y) -> dict:
         return {"n": int(m.sum()), "rho": None, "p": None}
     r = spearmanr(x[m], y[m])
     return {"n": int(m.sum()), "rho": float(r.statistic), "p": float(r.pvalue)}
+
+
+def cluster_bootstrap_auc(y_list, scores: dict, contrasts=(), B: int = 1000, seed: int = 0) -> dict:
+    """Task-clustered bootstrap of POOLED AUC.
+
+    y_list[i] / scores[name][i] are the labels / scores of task i (held-out repo). Each resample draws tasks
+    with replacement, concatenates their samples and recomputes the pooled AUC of every scorer; contrasts are
+    paired differences (a - b) on the same resample.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    n = len(y_list)
+    names = list(scores)
+    point = {k: float(roc_auc_score(np.concatenate(y_list), np.concatenate(scores[k]))) for k in names}
+    rng = np.random.default_rng(seed)
+    draws = {k: [] for k in names}
+    for _ in range(B):
+        idx = rng.integers(0, n, n)
+        y = np.concatenate([y_list[i] for i in idx])
+        if y.min() == y.max():
+            continue
+        for k in names:
+            draws[k].append(roc_auc_score(y, np.concatenate([scores[k][i] for i in idx])))
+    arr = {k: np.asarray(v) for k, v in draws.items()}
+    out = {"n_tasks": n, "B_used": int(len(arr[names[0]])), "auc": {}, "contrasts": {}}
+    for k in names:
+        lo, hi = _ci(arr[k])
+        out["auc"][k] = {"point": point[k], "lo": lo, "hi": hi}
+    for a, b in contrasts:
+        if a in arr and b in arr:
+            d = arr[a] - arr[b]
+            lo, hi = _ci(d)
+            out["contrasts"][f"{a}-{b}"] = {"diff": point[a] - point[b], "lo": lo, "hi": hi,
+                                           "p_diff_le0": float((d <= 0).mean())}
+    return out

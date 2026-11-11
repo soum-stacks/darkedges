@@ -30,7 +30,7 @@ def test_positives_and_features():
     pos, seen = dark_positives(rows)
     assert ("fastapi.core.run", "fastapi.core.Widget.render") in pos and len(pos) == 3
     f = ctx.features("fastapi.core.run", "fastapi.util.fmt")
-    assert f.shape == (6,) and f[2] == 1.0 and f[5] == 0.0          # 1 common neighbour (helper); different module
+    assert f.shape == (7,) and f[2] == 1.0 and f[5] == 0.0 and f[6] == 0.0          # 1 common neighbour (helper); different module
     assert ctx.ppr_from("fastapi.core.run").sum() <= 1.0 + 1e-9
 
 
@@ -61,3 +61,29 @@ def test_embedding_loader_and_loo(tmp_path):
     scorers = {r["scorer"] for r in out}
     assert {"name_jaccard", "ppr", "logreg_no_emb"} <= scorers and "emb_cos" not in scorers
     assert all(0.0 <= r["auc"] <= 1.0 and r["n_pos"] > 0 for r in out)
+
+
+def _class_graph():
+    nodes = [{"id": i, "name": i, "text": t} for i, t in [
+        ("pkg.mod.K", "class K:\n    pass"), ("pkg.mod.K.a", "def a(self):\n    pass"),
+        ("pkg.mod.K.b", "def b(self):\n    pass"), ("pkg.mod.f", "def f():\n    pass"), ("pkg.mod.g", "def g():\n    pass")]]
+    edges = [{"source": "pkg.mod.f", "target": "pkg.mod.K", "type": "calls"},
+             {"source": "pkg.mod.K", "target": "pkg.mod.K.b", "type": "calls"}]
+    return Graph(nodes, edges)
+
+
+def test_class_hub_removal_and_same_class():
+    g = _class_graph()
+    hub, nohub = StaticCtx(g), StaticCtx(g, drop_class_hubs=True)
+    assert hub.features("pkg.mod.f", "pkg.mod.K.b")[2] == 1.0        # the class node is a common neighbour
+    assert nohub.features("pkg.mod.f", "pkg.mod.K.b")[2] == 0.0      # ...and is gone without class hubs
+    assert hub.features("pkg.mod.K.a", "pkg.mod.K.b")[6] == 1.0 and hub.features("pkg.mod.f", "pkg.mod.g")[6] == 0.0
+
+
+def test_exclude_same_class_positives():
+    rows = [{"caller_id": "pkg.mod.K.a", "callee_id": "pkg.mod.K.b", "phase": "runtime", "test_code": False,
+             "kind": "direct", "static_edge": False, "same_class": True},
+            {"caller_id": "pkg.mod.f", "callee_id": "pkg.mod.g", "phase": "runtime", "test_code": False,
+             "kind": "direct", "static_edge": False, "same_class": False}]
+    assert len(dark_positives(rows)[0]) == 2
+    assert dark_positives(rows, exclude_same_class=True)[0] == [("pkg.mod.f", "pkg.mod.g")]

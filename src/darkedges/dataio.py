@@ -13,6 +13,8 @@ import os
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
+from .causes import is_class_text
+
 FAIL_OUTCOMES = {"failed", "error"}
 
 
@@ -59,12 +61,14 @@ class Graph:
     def __init__(self, nodes: list[dict], edges: list[dict]):
         self.ids: list[str] = []
         self.text: dict[str, str] = {}
-        self.name: dict[str, str] = {}
+        self.name: dict[str, str] = {}      # SHORT name = last dotted component of the id
+        self.raw_name: dict[str, str | None] = {}   # the graph's own `name` field, unused by the analysis
         for n in nodes:
             nid = n["id"]
             self.ids.append(nid)
             self.text[nid] = n.get("text") or ""
-            self.name[nid] = n.get("name") or nid.rsplit(".", 1)[-1]
+            self.raw_name[nid] = n.get("name")
+            self.name[nid] = nid.rsplit(".", 1)[-1]
         self.node_set = set(self.ids)
         self.calls_out: dict[str, set] = defaultdict(set)
         self.calls_in: dict[str, set] = defaultdict(set)
@@ -72,6 +76,10 @@ class Graph:
         self.adj_all: dict[str, set] = defaultdict(set)    # undirected, any type
         self.any_pairs: set[tuple[str, str]] = set()       # directed, any type
         self.edge_types: Counter = Counter()
+        self._class_nodes = None
+        self._class_of: dict = {}
+        self._noclass_out = None
+        self._noclass_und = None
         for e in edges:
             u, v = e.get("source"), e.get("target")
             if u is None or v is None:
@@ -89,6 +97,39 @@ class Graph:
 
     def has_call(self, u: str, v: str) -> bool:
         return v in self.calls_out.get(u, ())
+
+    # ---- class-node helpers (class nodes aggregate calls and act as hubs in the released graphs)
+    @property
+    def class_nodes(self) -> set:
+        if self._class_nodes is None:
+            self._class_nodes = {n for n in self.ids if is_class_text(self.text[n])}
+        return self._class_nodes
+
+    def class_of(self, nid: str):
+        """Nearest enclosing class node (longest proper dotted prefix that is a class node), or None."""
+        if nid not in self._class_of:
+            parts, c = nid.split("."), None
+            for i in range(len(parts) - 1, 0, -1):
+                p = ".".join(parts[:i])
+                if p in self.class_nodes:
+                    c = p
+                    break
+            self._class_of[nid] = c
+        return self._class_of[nid]
+
+    def calls_out_noclass(self) -> dict:
+        """Directed calls adjacency with every class node removed (they cannot act as intermediates)."""
+        if self._noclass_out is None:
+            cn = self.class_nodes
+            self._noclass_out = {u: {v for v in vs if v not in cn} for u, vs in self.calls_out.items() if u not in cn}
+        return self._noclass_out
+
+    def adj_calls_noclass(self) -> dict:
+        """Undirected calls adjacency with every class node removed."""
+        if self._noclass_und is None:
+            cn = self.class_nodes
+            self._noclass_und = {u: {v for v in vs if v not in cn} for u, vs in self.adj_calls.items() if u not in cn}
+        return self._noclass_und
 
 
 def load_graph(path: Path) -> Graph:

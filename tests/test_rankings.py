@@ -56,3 +56,15 @@ def test_gold_dark_only():
     assert (git["in_trace"], git["in_trace_diff"], git["dark_only"]) == (1, 1, 1)
     _, _, git2 = rank_task(task, trace, graph, {"fastapi.util.unused"}, n_shuffles=10)
     assert git2["in_trace"] == 0 and git2["dark_only"] == 0
+
+
+def test_static_neighbourhood_starts_from_test_code_frame():
+    g = synth.make_graph("fastapi")
+    g["edges"].append({"source": "tests.test_fastapi.test_x", "target": "fastapi.core.run", "type": "calls", "key": 0})
+    graph = Graph(g["nodes"], g["edges"])
+    task = {"instance_id": "t1", "repo": "fastapi/fastapi", "problem_statement": ""}
+    trace = synth.make_trace("fastapi")
+    trace["tests"]["tests/test_a.py::test_fail"]["fail_frames"] = [["tests/test_fastapi.py", 4, "test_x"]]  # only the test frame
+    _, summ, git = rank_task(task, trace, graph, {"fastapi.core.helper"}, n_shuffles=10)
+    assert git["gold_in_static_k3_of_fail"] == 1          # test_x -> run -> helper
+    assert summ["n_fail_frames_src"] == 0 and summ["n_fail_frames_mapped"] == 1

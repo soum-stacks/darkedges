@@ -99,7 +99,7 @@ def main():
 
     # cause and near-miss breakdown of dark edges
     from collections import Counter
-    causes, plens, kinds = Counter(), Counter(), Counter()
+    causes, plens, kinds, plens_nc, flags = Counter(), Counter(), Counter(), Counter(), Counter()
     with open(res / "edges_labeled.jsonl", encoding="utf-8") as fh:
         for line in fh:
             r = json.loads(line)
@@ -109,9 +109,15 @@ def main():
             if not r["static_edge"]:
                 causes[r["cause"]] += 1
                 plens[r["static_path_len"]] += 1
+                plens_nc[r.get("static_path_len_noclass")] += 1
+                flags["same_class"] += bool(r.get("same_class"))
+                flags["callee_dunder"] += bool(r.get("callee_dunder"))
+                flags["dark_rows"] += 1
     print("\nrow counts by (kind, label):", dict(kinds))
     print("dark-edge causes:", dict(causes))
     print("dark-edge static_path_len (None = >3 hops):", dict(plens))
+    print("dark-edge static_path_len with class nodes removed:", dict(plens_nc))
+    print("dark rows flagged:", dict(flags))
 
 
 if __name__ == "__main__":

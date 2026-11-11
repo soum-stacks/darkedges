@@ -40,7 +40,7 @@ def parse_header(node_text: str):
 
 def classify(node_text: str, kind: str, is_async: bool | None = None, name: str | None = None) -> str:
     decorators, hkind, hname = parse_header(node_text)
-    name = name or hname or ""
+    name = hname or name or ""
     if is_async is None:
         is_async = hkind == "async def"
     if any(_PROP.match(d) for d in decorators):
@@ -62,3 +62,7 @@ def text_has_decorators(node_text: str) -> bool:
 
 def is_class_text(node_text: str) -> bool:
     return parse_header(node_text)[1] == "class"
+
+
+def is_dunder(name: str) -> bool:
+    return bool(_DUNDER.match(name or ""))

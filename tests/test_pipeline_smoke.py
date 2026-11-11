@@ -23,8 +23,10 @@ def test_pipeline(tmp_path):
     _run("scripts/05_rankings.py", *root, "--shuffles", "20")
     assert (tmp_path / "results" / "rankings.csv").stat().st_size > 0
     _run("scripts/06_linkpred.py", *root)
+    _run("scripts/06_linkpred.py", *root, "--no-class-hubs", "--exclude-same-class", "--tag", "nohubs_crossclass")
     assert (tmp_path / "results" / "linkpred.csv").exists()
     _run("scripts/07_stats_figures.py", *root, "--boot", "200", "--min-tasks", "3")
     st = json.loads((tmp_path / "results" / "stats.json").read_text())
-    assert "H1" in st and "H2" in st and "gold_in_trace" in st
+    assert "H1" in st and "H2" in st and "gold_in_trace" in st and "default" in st["H3"]
+    assert "dark_fraction_strict" in st["H1"]["series"]
     assert (tmp_path / "paper" / "figures" / "F1_dark_fraction.png").exists()

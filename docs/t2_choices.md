@@ -45,3 +45,21 @@ Where it leaves a detail open, the T2 code makes the choices below. Append a poi
 - H2 is evaluated for ochiai and stack_dist against static_k2 at K=20 (>=10 points and CI excludes 0 and McNemar p<0.05 are reported separately, not combined into a verdict).
 - H3: per held-out repo, AUC(emb_cos) - AUC(name_jaccard); flagged if > 0.02.
 - H4 (agent) is Phase 3, not computed here.
+
+## Amendments found on first real run (6 Nov 2026, after 04/05 output, before 06/07)
+- Graph node `name` field is not reliably the short name; the code now always uses the last dotted component of the id (`Graph.name`; raw field kept as `Graph.raw_name`). This fixes dunder detection, the name-index used for issue-text seeds (static_k baselines) and the name-token Jaccard scorer.
+- Cause labelling reads the function name from the node source text first.
+- gold_in_static_k3_of_fail now starts the BFS from failing frames including test-code frames (the graph has test nodes with call edges); the first version dropped them and understated static reach.
+- The released graphs contain no `async def` nodes in any repo (0 of ~300k function nodes), so edges with an async endpoint cannot be labelled and are outside every dark-edge fraction. Report as a limitation.
+
+## Amendments after the first full run (6 Nov 2026): class nodes and same-class calls
+- Finding (strict set, 10,067 dark pairs): 46% are calls between methods of the same class, 31% have a dunder callee; with class nodes allowed as intermediates 67% of dark edges are at static distance 2, with class nodes removed 5% are (92% have no route within 3 hops). In the example graph 40% of `calls` edges start at a class node. Class nodes therefore act as hubs in the released graphs.
+- The headline dark fraction keeps the protocol definition. Sensitivities are now reported next to it: excluding same-class pairs, and 'strict' (also excluding dunder callees). Both are granularity effects of the released graphs, not a replacement headline.
+- New columns in edges_labeled.jsonl: same_class, callee_dunder, static_path_len_noclass. `static_path_len` keeps its meaning (class nodes allowed).
+- Link prediction is run in three variants: default; `--no-class-hubs` (common neighbours, Adamic-Adar and PPR on a calls graph without class nodes); `--no-class-hubs --exclude-same-class` (also drops same-class pairs from positives and negatives). A `same_class` indicator is added as a scorer.
+- Static k-hop baselines and gold_in_static_k3_of_fail keep the class hubs: the agent-visible neighbour tool exposes them, and keeping them is the conservative choice for H2.
+
+## Extras added after the second full run (6 Nov 2026)
+- 08_callee_split.py: dark fraction by callee type (module-level function; method of the same class; method of another class, with and without dunders; same vs cross module). Categories are different cuts and overlap.
+- 09_linkpred_bootstrap.py: task-clustered bootstrap (1,000 resamples) of the held-out repo's pooled AUC and of paired AUC gaps, for the three link-prediction variants; point estimates equal step 06's.
+- 09_f2p.pbs: sensitivity run of steps 04-07 on the f2p task set in a separate root (sens_f2p/, data symlinked). The strict set stays the primary analysis.

@@ -24,7 +24,7 @@ trap 'handle_error $LINENO' ERR
 
 # ---- EDIT PER JOB ----
 MODULES=(anaconda3)
-CONDA_ENV="darkedges"
+CONDA_ENV="/home/soumi/miniconda3/envs/darkedges"
 REQUIRED_CMDS=(timeout python)
 # ----------------------
 

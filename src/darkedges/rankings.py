@@ -296,8 +296,11 @@ def rank_task(task: dict, trace: dict, graph: Graph, gold: set[str], bm25: BM25 
             else:
                 n_dark += 1
     frame_idx, _ = fail_frame_nodes(trace, ftests)
-    frame_ids = mapped_ids_of_nodes(trace, mapping, frame_idx, elig)
-    near = set(bfs_levels(graph.adj_all, frame_ids, 3)) if frame_ids else set()
+    frame_ids = mapped_ids_of_nodes(trace, mapping, frame_idx, elig)            # non-test frames only
+    frame_ids_any = {mapping[i] for i in frame_idx if mapping.get(i) is not None}  # incl. test functions
+    # The graph contains test functions with their own call edges, so a fair static
+    # neighbourhood starts from the failing frame wherever it is, test code included.
+    near = set(bfs_levels(graph.adj_all, frame_ids_any, 3)) if frame_ids_any else set()
     git = {
         "instance_id": iid, "repo": repo,
         "in_trace": int(bool(gold_exec)),
@@ -311,6 +314,7 @@ def rank_task(task: dict, trace: dict, graph: Graph, gold: set[str], bm25: BM25 
         "instance_id": iid, "repo": repo, "n_gold": len(gold), "n_seeds": len(seeds),
         "n_tests": len(tests), **och_info, **sd_info,
         "n_trace_nodes": len(trace["nodes"]),
+        "n_fail_frames_src": len(frame_ids), "n_fail_frames_mapped": len(frame_ids_any),
         "mapped_nodes": sum(1 for v in mapping.values() if v is not None),
     }
     return rows, summary, git

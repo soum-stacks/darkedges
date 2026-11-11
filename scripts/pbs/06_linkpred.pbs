@@ -24,7 +24,7 @@ trap 'handle_error $LINENO' ERR
 
 # ---- EDIT PER JOB ----
 MODULES=(anaconda3)
-CONDA_ENV="darkedges"
+CONDA_ENV="/home/soumi/miniconda3/envs/darkedges"
 REQUIRED_CMDS=(timeout python)
 # ----------------------
 
@@ -48,7 +48,14 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 [[ -s "$RES_DIR/edges_labeled.jsonl" ]] || { log "missing $RES_DIR/edges_labeled.jsonl (run 04 first)"; exit 1; }
 [[ -s "$DATA_DIR/slim/tasks.jsonl" ]] || { log "missing tasks.jsonl"; exit 1; }
-log "step 06: dark-edge link prediction (leave-one-repo-out)"
+head -1 "$RES_DIR/edges_labeled.jsonl" | grep -q '"same_class"' || { log "edges_labeled.jsonl is from before the class-aware fix: rerun 04 first"; exit 1; }
+log "step 06a: dark-edge link prediction, default"
 timeout --foreground 20000 python "$REPO/scripts/06_linkpred.py" --root "$REPO" 2>&1 | tee -a "$LOG"
-[[ -s "$RES_DIR/linkpred.csv" ]] || { log "missing output: $RES_DIR/linkpred.csv"; exit 1; }
+log "step 06b: structural scorers without class hubs"
+timeout --foreground 20000 python "$REPO/scripts/06_linkpred.py" --root "$REPO" --no-class-hubs --tag nohubs 2>&1 | tee -a "$LOG"
+log "step 06c: no class hubs, same-class pairs excluded"
+timeout --foreground 20000 python "$REPO/scripts/06_linkpred.py" --root "$REPO" --no-class-hubs --exclude-same-class --tag nohubs_crossclass 2>&1 | tee -a "$LOG"
+for f in linkpred.csv linkpred_nohubs.csv linkpred_nohubs_crossclass.csv; do
+  [[ -s "$RES_DIR/$f" ]] || { log "missing output: $RES_DIR/$f"; exit 1; }
+done
 log "done"

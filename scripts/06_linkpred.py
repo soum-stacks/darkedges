@@ -30,6 +30,11 @@ def main():
     ap.add_argument("--min-tasks", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--no-class-hubs", action="store_true",
+                    help="structural scorers (common_neighbors, adamic_adar, ppr) on a graph without class nodes")
+    ap.add_argument("--exclude-same-class", action="store_true",
+                    help="drop same-class dark pairs from positives and same-class pairs from negatives")
+    ap.add_argument("--tag", default="", help="suffix for output files: linkpred_<tag>.csv")
     ap.add_argument("--root", default=None)
     a = ap.parse_args()
 
@@ -64,9 +69,10 @@ def main():
         graph = cache.get(gp)
         emb = load_embeddings(emb_dir, iid)
         n_emb += emb is not None
-        ctx = StaticCtx(graph, emb)
+        ctx = StaticCtx(graph, emb, drop_class_hubs=a.no_class_hubs)
         rng = np.random.default_rng([a.seed, k])
-        s = build_task_samples(ctx, by_task[iid], rng, max_pos=a.max_pos, hits_pos=a.hits_pos)
+        s = build_task_samples(ctx, by_task[iid], rng, max_pos=a.max_pos, hits_pos=a.hits_pos,
+                               exclude_same_class=a.exclude_same_class)
         if len(s["y"]) == 0:
             notes.append(f"{iid}: no dark positives")
             continue
@@ -87,13 +93,15 @@ def main():
     print("tasks with positives per repo:", dict(counts), "| held-out repos:", held)
     rows = evaluate_loo(per_task, held, use_emb=use_emb, seed=a.seed)
 
-    with open(res / "linkpred.csv", "w", newline="", encoding="utf-8") as fh:
+    suffix = f"_{a.tag}" if a.tag else ""
+    with open(res / f"linkpred{suffix}.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["heldout_repo", "scorer", "auc", "ap", "hits10", "n_pos", "n_neg"])
         w.writeheader()
         w.writerows(rows)
-    (res / "linkpred_notes.txt").write_text("\n".join(notes) + ("\n" if notes else ""))
+    (res / f"linkpred_notes{suffix}.txt").write_text("\n".join(notes) + ("\n" if notes else ""))
 
     # ---- console summary (paste this back)
+    print(f"\nvariant: tag={a.tag or 'default'} no_class_hubs={a.no_class_hubs} exclude_same_class={a.exclude_same_class}")
     print(f"\n{'held-out':10s} {'scorer':18s} {'AUC':>6s} {'AP':>6s} {'Hits@10':>8s} {'n_pos':>6s} {'n_neg':>7s}")
     for r in rows:
         h = "  n/a" if r["hits10"] is None else f"{r['hits10']:8.3f}"
