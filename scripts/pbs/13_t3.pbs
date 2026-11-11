@@ -1,0 +1,59 @@
+#!/bin/bash
+#PBS -N de_t3
+#PBS -q regular
+#PBS -l nodes=1:ppn=8
+#PBS -l walltime=02:00:00
+#PBS -e ../../logs/
+#PBS -o ../../logs/
+
+# T3 analyses on Helix. Submit from <repo>/scripts/pbs/:   qsub 13_t3.pbs
+#   step 1: 13_graph_repair.py  (needs results/edges_labeled.jsonl from 04; ~minutes)
+#   step 2: 12_agent_stats.py   (only if results/agent_check.jsonl exists, i.e. after the Kaggle run)
+set -Eeuo pipefail
+cd "$PBS_O_WORKDIR"
+REPO=$(cd ../.. && pwd)
+RES_DIR="$REPO/results"
+LOG="$REPO/logs/log_${PBS_JOBID}"
+mkdir -p "$REPO/logs" "$RES_DIR" "$REPO/paper/figures"
+
+log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+handle_error() {
+  local code=$?
+  log "FAILED job=$PBS_JOBID host=$(hostname) line=$1 exit=$code time=$(date '+%F %T')"
+  exit "$code"
+}
+trap 'handle_error $LINENO' ERR
+
+# ---- EDIT PER JOB ----
+MODULES=(anaconda3)
+CONDA_ENV="/home/soumi/miniconda3/envs/darkedges"
+REQUIRED_CMDS=(timeout python)
+# ----------------------
+
+source /etc/profile.d/modules.sh 2>/dev/null || true
+for m in "${MODULES[@]}"; do
+  module load "$m" && log "loaded module: $m"
+done
+if [[ -n "$CONDA_ENV" ]]; then
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+  conda activate "$CONDA_ENV"
+  log "conda env: $CONDA_ENV"
+fi
+for cmd in "${REQUIRED_CMDS[@]}"; do
+  command -v "$cmd" >/dev/null || { log "missing dependency: $cmd"; exit 127; }
+done
+log "python $(python --version 2>&1)"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+
+[[ -s "$RES_DIR/edges_labeled.jsonl" ]] || { log "missing edges_labeled.jsonl (run 04 first)"; exit 1; }
+log "step 1: static graph repair (strict)"
+timeout --foreground 5000 python "$REPO/scripts/13_graph_repair.py" --root "$REPO" --task-set strict 2>&1 | tee -a "$LOG"
+[[ -s "$RES_DIR/repair_summary.md" ]] || { log "missing repair_summary.md"; exit 1; }
+
+if [[ -s "$RES_DIR/agent_check.jsonl" ]]; then
+  log "step 2: agent check statistics (H4)"
+  timeout --foreground 1800 python "$REPO/scripts/12_agent_stats.py" --root "$REPO" 2>&1 | tee -a "$LOG"
+else
+  log "step 2 skipped: results/agent_check.jsonl not present yet"
+fi
+log "done"
