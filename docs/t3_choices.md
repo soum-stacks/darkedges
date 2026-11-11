@@ -34,3 +34,14 @@ left open, fixed before any agent episode was run (commit this file first; its c
   Measures the share of T2 dark pairs recovered, a precision proxy, and static k-hop recall@K on the repaired
   graph (same seeds, tie shuffles and K as T2).
 - Agent-check splits by repo and by T2 dark_only gold.
+
+## Amendment T3-A1 (12 Nov 2026, 00:15 IST): agent check re-run
+- Run 1 (11 Nov, interactive session) completed 180 episodes, but the full-run cell was re-executed while an
+  earlier invocation's worker thread was still running, so two batches ran concurrently (up to 8 parallel tasks
+  instead of 4) and the per-run file (agent_check.jsonl) was lost when the session ended. Only 92 of 180 printed
+  per-run lines survive (results/agent_check_run1_partial.jsonl, rebuilt by scripts/08b_rebuild_jsonl_from_log.py).
+- Seen before this decision: run-1 condition means only (gold file touched 0.717 / 0.700 / 0.600; resolved
+  0.183 / 0.183 / 0.133 for no_graph / static / tracelens; mean tracer outputs per tracelens run 0.2). No paired
+  test was computed.
+- Decision: re-run all 180 episodes unchanged (same tasks, prompts, budget, seeds; gold-file parser fixed; run as a
+  Kaggle background job). The re-run is the H4 analysis; run-1 means are reported as a consistency check.

@@ -16,6 +16,12 @@ import glob, importlib, json, logging, os, re, shutil, subprocess, sys, time
 from pathlib import Path
 
 T_START = time.time()
+_gpus = subprocess.run("nvidia-smi -L", shell=True, capture_output=True, text=True).stdout
+print(sys.version.split()[0], "|", _gpus.strip().replace("\n", " | ") or "NO GPU")
+assert sys.version_info[:2] == (3, 12), (
+    f"Python {sys.version.split()[0]}: the wheelhouse is cp312. Use Accelerator = GPU L4 x4 on the starter's "
+    "environment (Copy & Edit the official starter notebook), then restart the session.")
+assert _gpus.count("L4") >= 4, "Accelerator must be GPU L4 x4 (attach the main competition to make it selectable)."
 DATA_DIR = Path("/kaggle/input/competitions/gemma-4-developer-agent")
 WORK = Path("/kaggle/working")
 OUT = WORK / "agent_check"
@@ -178,6 +184,8 @@ print((AGENT_DIRS[("tracelens", 0)] / "agent.yaml").read_text())
 
 # %%
 # ---------------- vLLM server (start once; about 6 minutes)
+from swegemma.models import load_tasks          # import swegemma before litellm (starter order; avoids a circular import)
+from swegemma.config import ALLOWED_ADAPTER_EXTENSIONS
 import litellm, torch
 from adk_submission import VllmConfig, VllmServer, discover_adapters
 from swegemma.config import ALLOWED_ADAPTER_EXTENSIONS
@@ -221,7 +229,17 @@ for line in TASKS_PATH.read_text(encoding="utf-8").splitlines():
 missing = [i for i in TASK_IDS if i not in TASKS]
 assert not missing, f"unknown ids: {missing}"
 limits, gen_constraints = build_submission_limits()
-DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/", re.M)
+DIFF_FILE = re.compile(r"^(?:diff --git a/(\S+) b/\S+|\+\+\+ b/(\S+)|--- a/(\S+))", re.M)
+
+
+def patch_files(text):
+    """Changed file paths from a unified diff (git or plain ---/+++ headers)."""
+    out = set()
+    for m in DIFF_FILE.finditer(text or ""):
+        f = next((g for g in m.groups() if g), None)
+        if f and f != "dev/null":
+            out.add(f)
+    return out
 
 
 def is_test_file(p):
@@ -231,7 +249,13 @@ def is_test_file(p):
 
 
 def gold_files(iid):
-    return {f for f in DIFF_FILE.findall(RAW[iid].get("patch", "")) if not is_test_file(f)}
+    text = RAW[iid].get("patch") or RAW[iid].get("gold_patch") or getattr(TASKS[iid], "patch", "") or ""
+    return {f for f in patch_files(text) if not is_test_file(f)}
+
+
+_ng = {i: len(gold_files(i)) for i in TASK_IDS}
+print("gold files per task:", _ng)
+assert all(_ng.values()), f"gold patch files not parsed for: {[i for i, n in _ng.items() if not n]}"
 
 
 def make_evaluator(agent_dir, results_dir):
@@ -259,7 +283,7 @@ def trace_text(results_dir, iid):
 
 def row_for(cond, seed, iid, r, results_dir, secs_wall, err=None):
     patch = (getattr(r, "agent_patch", "") or "").strip() if r is not None else ""
-    pf = {f for f in DIFF_FILE.findall(patch) if not is_test_file(f)}
+    pf = {f for f in patch_files(patch) if not is_test_file(f)}
     gf = gold_files(iid)
     txt = trace_text(results_dir, iid)
     return {
@@ -340,6 +364,11 @@ assert not SMOKE_ONLY, "SMOKE_ONLY=True: stopping here"
 
 # %%
 # ---------------- full run: seed-major, so seed 0 is complete for all conditions before seed 1 starts
+# DO NOT interrupt this cell. The batch runs in a worker thread that keeps going after an interrupt; re-running the
+# cell then starts a second, concurrent copy (this happened in run 1). If interrupted: Run -> Restart kernel, then
+# re-run cells 1-5 and this cell (finished runs are skipped). Preferred: Save Version -> Save & Run All.
+import threading
+assert threading.active_count() < 50, "stray worker threads alive: restart the kernel before re-running"
 for seed in SEEDS:
     for cond in CONDITIONS:
         todo = [i for i in TASK_IDS if (i, cond, seed) not in done_keys()]
