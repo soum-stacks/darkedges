@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracelens"
+version = "0.1.0"
+description = "Stdlib-only runtime call tracer for Python 3.12+ (sys.monitoring, sys.setprofile fallback): per-test call edges, lifted framework edges, agent-friendly summaries."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Soumi Sharma"}]
+dependencies = []
+
+[project.optional-dependencies]
+analysis = ["numpy", "scipy", "scikit-learn", "pandas", "matplotlib"]
+
+[project.scripts]
+tracelens-run = "tracelens.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tracelens*"]
