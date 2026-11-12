@@ -14,17 +14,17 @@ In this competition an agent based on Gemma 4 gets a GitHub issue and a reposit
 
 Such a *static* call graph is built by reading the code without running it, which is hard in Python: `self.render()` only says that *some* `render` method will run, and frameworks call code through decorators and dispatch tables. My question: **when a failing test runs, which of its calls are invisible in the graph, and does that hurt bug localisation?** I call a runtime call with no matching graph edge a **dark edge**.
 
-This is not a new worry. A public audit ran each repository’s whole test suite and found that the graphs hold only 14–21% of runtime call pairs and none of 10,321 resolvable `self.m()` calls (akhilchinta1505 2026); others found no async functions at all (aghasalim 2026; Competition hosts 2026) and rebuilt the graphs (saurin16 2026; danielmantiglia 2026). Outside the competition, DyPyBench found 51% of dynamic Python call edges missing from PyCG’s static graphs (Bouzenia, Krishan, and Pradel 2024). I build on this and add:
+This is not a new worry. A public audit ran each repository’s whole test suite and found that the graphs hold only 14–21% of runtime call pairs and none of 10,321 resolvable `self.m()` calls (akhilchinta1505 2026); others found no async functions at all (aghasalim 2026; Competition hosts 2026) and rebuilt the graphs (saurin16 2026; danielmantiglia 2026). Outside the competition, DyPyBench found 51% of dynamic Python call edges missing from PyCG’s static graphs (Bouzenia, Krishan, and Pradel 2024). This paper is about code-graph generation (the competition’s Code Comprehension topic) and releases a reusable tracer. I build on this work and add:
 
-1.  which calls go dark (methods vs functions), which explains the differences between repositories (Section 3);
+1.  which calls go dark, explaining the repository differences (Section 3);
 
-2.  how often the edit location is executed by the failing tests versus reachable in the graph, with an upper bound on what runtime evidence could buy (Section 4);
+2.  how often the edit location is executed versus reachable in the graph, with an oracle upper bound (Section 4);
 
-3.  a cheap static repair that recovers 41% of dark edges, and the finding that it does not help localisation (Section 5);
+3.  a static repair that recovers 41% of dark edges but not localisation (Section 5);
 
-4.  a ladder of rankings that measures how much runtime evidence survives without the failing test (Section 6);
+4.  how much runtime evidence survives without the failing test (Section 6);
 
-5.  a pre-registered agent experiment with a tracing tool for Gemma 4 E4B, which came out null (Section 7).
+5.  a pre-registered agent test of a tracing tool for Gemma 4 E4B, which came out null (Section 7).
 
 My hypotheses (H1–H4) were frozen before any analysis, and I report the ones that failed.
 
@@ -92,13 +92,13 @@ Since most dark edges are method calls, I parsed the source stored in each node 
 
 *[Insert figure: F7_repair.png]* **Figure 3:** Dark fraction as repair rules are added (task mean, 95% CI). Rules are cumulative.
 
-The repair recovers 4,160 of the 10,067 dark pairs (41%): 74% of same-class method calls, but only 15% of calls into other classes, all through constructors. Calls like `self.console.print()` need type information that tools such as PyCG or Jarvis (Salis et al. 2021; Huang et al. 2024) provide. As a precision check, of the added edges whose two endpoints both ran, 87% were observed at run time. After repair, rich drops from 0.81 to 0.45 dark and fastapi from 0.47 to 0.34 (Figure 3); pooled, the graph then holds 58% of runtime pairs, comparable to the 62–69% of the audit’s full `ast` rebuild (different test scope) (akhilchinta1505 2026).
+The repair recovers 4,160 of the 10,067 dark pairs (41%): 74% of same-class method calls, but only 15% of calls into other classes, all through constructors. As a precision check, of the added edges whose two endpoints both ran, 87% were observed at run time. After repair, rich drops from 0.81 to 0.45 dark and fastapi from 0.47 to 0.34 (Figure 3); pooled, the graph then holds 58% of runtime pairs, comparable to the 62–69% of the audit’s full `ast` rebuild (different test scope) (akhilchinta1505 2026).
 
 Yet the repaired graph **does not improve static localisation**: recall@20 for the two-hop baseline moves from 0.26 to 0.27 (CI of the change -0.01 to +0.03). Class nodes already connect sibling methods within two hops, so the new edges add little reachability. The bottleneck is elsewhere: a starting point in the issue text, and a path that only running the code reveals.
 
 ## How much runtime evidence survives without the failing test? (exploratory)
 
-The oracle rankings use the failing tests that define the task, which an agent does not have. So I asked what it could get from tests that *already exist*. I kept only tests that passed before the fix and that the test patch neither adds nor edits (2,652 of 3,384 traced tests; 31 tasks have none) and built a ladder of rankings, with all settings fixed in a dated note before running: BM25 alone; the functions run by the five existing tests most similar to the issue, down-weighting functions that every test runs; BM25 restricted to those functions; and a hybrid that fuses BM25 with the test ranking (reciprocal-rank fusion: each list adds 1/(60 + rank)).
+An agent does not have the failing tests, so what can it get from tests that *already exist*? I kept only tests that passed before the fix and that the test patch neither adds nor edits (2,652 of 3,384 traced tests; 31 tasks have none) and built a ladder of rankings, with all settings fixed in a dated note before running: BM25 alone; the functions run by the five existing tests most similar to the issue, down-weighting functions that every test runs; BM25 restricted to those functions; and a hybrid that fuses BM25 with the test ranking (reciprocal-rank fusion: each list adds 1/(60 + rank)).
 
 *[Insert figure: F8_ladder.png]* **Figure 4:** Recall@20 without the failing tests (green, blue) against the oracle (grey). Dashed line: share of tasks where any existing test runs a gold function. 89 tasks, 95% task-clustered CIs.
 
@@ -121,7 +121,7 @@ Agent check with Gemma 4 E4B, 30 tasks, 2 seeds. Tracer minus graph tools over a
 
 **Result.** The tracer did not help: **H4 is not supported** (Table 3). The graph tools did not help either, compared with no graph at all. Uptake was low: the tracer’s output reached the agent in only 9 of 32 recovered tracer runs (28%), even though the prompt asked for it right after the reproduction. Runs that did trace hit a gold file about as often as runs that did not (0.67 vs 0.65). Agents used an available debugger in only 0.2–6.2% of runs elsewhere (Daxerer et al. 2026), and another entrant saw E4B call a map tool in 1 of 84 runs (clavis-systems 2026); on the other side, one team reports more passes with graph tools for E2B on a larger sample (nakranivaibhav 2026), and Debug2Fix (Garg and Huang 2026) gains by forcing debugging through a sub-agent. Section 6 suggests why a tracer adds little here: its value depends on a failing reproduction.
 
-**Disclosure.** A re-executed notebook cell briefly ran two batches at once (up to 8 tasks in parallel instead of 4), and the per-run file was lost with the session. The 180-run summary survived; 92 per-run records were recovered from the printed log. Run times stayed far below the 10-minute limit. Both are logged in the amendment file.
+**Disclosure.** A re-executed notebook cell briefly ran two batches at once (up to 8 tasks in parallel instead of 4), and the per-run file was lost with the session. The 180-run summary survived; 92 per-run records were recovered from the printed log. Both are logged in the amendment file.
 
 ## Related work
 
@@ -138,8 +138,9 @@ Four repositories, two of which dominate (rich holds 70% of pairs); one tracer c
 > 2. A denser graph does not localise better; start from text search over the issue.
 > 3. Runtime evidence pays off through a failing reproduction; adding existing tests to BM25 gains only about 6 points.
 > 4. Small agents rarely call optional tools, so putting the evidence in the prompt is the natural next test (not tried here).
+> 5. For graph builders: resolve `self.m()`, attribute and constructor calls; this alone recovers 41% of dark edges.
 
-**Code and data.** TraceLens, the agent skill, all analysis scripts, the frozen protocol (`configs/protocol.yaml`, tag `protocol-v1`), the amendment log, and aggregate result tables are at (Sharma 2026). Competition data and per-task traces are not redistributed, in line with the rules. Software: Python 3.12, seed 0, 100 tie-break shuffles, 10,000 bootstrap resamples.
+**Code and data.** TraceLens, the agent skill, all analysis scripts, the frozen protocol (`configs/protocol.yaml`, tag `protocol-v1`), the amendment log, and aggregate result tables are at (Sharma 2026). A public Kaggle notebook (Project Links) installs TraceLens, shows a dark edge on a toy package, runs the unit tests and redraws Figures 3–4 from the released aggregates; the PDF is attached to the release. Competition data and traces are not redistributed. Software: Python 3.12, seed 0.
 
 **AI assistance.** I used an AI assistant to help write analysis code and to help draft and edit this text. The study design, experiments, numbers and conclusions are mine and were checked against the logged outputs.
 
